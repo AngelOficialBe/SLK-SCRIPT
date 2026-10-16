@@ -1,176 +1,223 @@
--- ==================== ARGZx Arsenal - HARD LOCK Silent Aim + ESP ====================
--- Circulo grande de FOV
--- Si el enemigo esta dentro del circulo → TODOS los tiros van BLOQUEADOS a la cabeza
--- Compatible con Xeno
+-- ==================== ARGZx Arsenal HARD LOCK v3 ====================
+-- Mas estable para Xeno
+-- Todo se activa solo
 
 local Players = game:GetService("Players")
-local ReplicatedFirst = game:GetService("ReplicatedFirst")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local CoreGui = game:GetService("CoreGui")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ReplicatedFirst = game:GetService("ReplicatedFirst")
 
 local LocalPlayer = Players.LocalPlayer
 local Camera = workspace.CurrentCamera
 
--- ==================== MODULOS ====================
-local GeneralFunctions, TeamCheck, Bridge, State, General
+print("[ARGZx] Iniciando...")
 
-local okLoad, loadErr = pcall(function()
-	GeneralFunctions = require(ReplicatedStorage.Modules.GeneralFunctions)
-	TeamCheck = require(ReplicatedStorage.Modules.TeamCheck)
-	Bridge = require(ReplicatedFirst.Client.Utility.Bridge)
-	State = require(ReplicatedFirst.Client.Utility.State)
-	General = require(ReplicatedFirst.Client.Utility.General)
-end)
-
-if not okLoad then
-	warn("[ARGZx] Error: entra a una PARTIDA de Arsenal antes de ejecutar.")
-	warn(loadErr)
-	return
+-- Esperar a que el jugador este listo
+if not LocalPlayer.Character then
+	LocalPlayer.CharacterAdded:Wait()
 end
+task.wait(1)
 
-local OriginalCast = GeneralFunctions.cast
-local OriginalGetHitList = GeneralFunctions.gethitlist
-
--- ==================== CONFIG (AGRESIVO) ====================
+-- ==================== SETTINGS ====================
 local Settings = {
-	SilentAimEnabled = true,
-	FieldOfView = 350,              -- CIRCULO GRANDE
-	IgnoreTeammates = true,
-	RequireVisibility = false,      -- Atraviesa paredes
-	HeadshotRatio = 0.72,           -- Muy arriba del hitbox = cabeza
-	MaximumDistance = 2500,
-	MinimumWeaponRange = 10,
-	CameraOriginTolerance = 4,
-
+	SilentAim = true,
+	FOV = 320,
+	TeamCheck = true,
+	HeadOffset = 0.8,          -- altura de la cabeza
+	MaxDistance = 2000,
 	InfiniteAmmo = true,
-	ESPEnabled = true,
-	MaxESPDistance = 1000,
-
-	-- Colores
-	FOVColor = Color3.fromRGB(255, 50, 50),
+	ESP = true,
+	ShowFOV = true,
 	EnemyColor = Color3.fromRGB(255, 40, 40),
 	AllyColor = Color3.fromRGB(40, 255, 90),
+	FOVColor = Color3.fromRGB(255, 60, 60),
 }
 
--- Limpiar versiones anteriores
-if getgenv().ArsenalCombatAssist and getgenv().ArsenalCombatAssist.Restore then
-	pcall(function() getgenv().ArsenalCombatAssist.Restore() end)
+-- ==================== LIMPIAR VERSION ANTERIOR ====================
+if getgenv().ARGZxArsenal then
+	pcall(function()
+		if getgenv().ARGZxArsenal.Cleanup then
+			getgenv().ARGZxArsenal.Cleanup()
+		end
+	end)
 end
 
-print("[ARGZx] Cargando HARD LOCK Silent Aim...")
-
--- ==================== FOV CIRCLE (visible) ====================
+-- ==================== FOV CIRCLE ====================
 local FOVCircle = nil
+local hasDrawing = false
+
 pcall(function()
 	FOVCircle = Drawing.new("Circle")
 	FOVCircle.Thickness = 2
-	FOVCircle.NumSides = 80
-	FOVCircle.Radius = Settings.FieldOfView
+	FOVCircle.NumSides = 70
+	FOVCircle.Radius = Settings.FOV
 	FOVCircle.Filled = false
 	FOVCircle.Color = Settings.FOVColor
-	FOVCircle.Transparency = 0.7
+	FOVCircle.Transparency = 0.65
 	FOVCircle.Visible = true
+	hasDrawing = true
+	print("[ARGZx] FOV Circle creado")
 end)
 
--- ==================== SILENT AIM HARD LOCK ====================
-local function IsValidTarget(player)
-	if player == LocalPlayer then return false end
-	local character = player.Character
-	if not character then return false end
-	local humanoid = character:FindFirstChildOfClass("Humanoid")
-	if not humanoid or humanoid.Health <= 0 then return false end
-	if not character:FindFirstChild("Hitbox") then return false end
+if not hasDrawing then
+	print("[ARGZx] Drawing no disponible, FOV invisible (normal en algunos executors)")
+end
 
-	if Settings.IgnoreTeammates then
-		local ok, isTeam = pcall(function()
-			return TeamCheck.isteam(LocalPlayer, character)
-		end)
-		if ok and isTeam then return false end
+-- ==================== HELPERS ====================
+local function isAlive(plr)
+	local char = plr.Character
+	if not char then return false end
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	return hum and hum.Health > 0
+end
+
+local function isEnemy(plr)
+	if not Settings.TeamCheck then return true end
+	if LocalPlayer.Team and plr.Team then
+		return LocalPlayer.Team ~= plr.Team
 	end
 	return true
 end
 
-local function GetHeadPosition(hitbox, character)
-	-- Prioridad 1: Head real del personaje
-	local head = character:FindFirstChild("Head")
+local function getHeadPos(char)
+	local head = char:FindFirstChild("Head")
 	if head then
-		return head.Position + Vector3.new(0, 0.15, 0) -- un poco mas arriba del centro de la cabeza
+		return head.Position + Vector3.new(0, 0.2, 0)
 	end
-	-- Prioridad 2: parte superior del Hitbox
-	local verticalOffset = hitbox.Size.Y * Settings.HeadshotRatio
-	return hitbox.Position + Vector3.new(0, verticalOffset, 0)
+	local hitbox = char:FindFirstChild("Hitbox")
+	if hitbox then
+		return hitbox.Position + Vector3.new(0, hitbox.Size.Y * Settings.HeadOffset, 0)
+	end
+	local root = char:FindFirstChild("HumanoidRootPart")
+	if root then
+		return root.Position + Vector3.new(0, 2.5, 0)
+	end
+	return nil
 end
 
-local function GetAngleBetween(origin, direction, position)
-	local offset = position - origin
-	if offset.Magnitude < 0.001 then return 0 end
-	local dot = direction.Unit:Dot(offset.Unit)
-	return math.acos(math.clamp(dot, -1, 1))
-end
+local function getClosestInFOV()
+	local closest = nil
+	local closestAngle = math.rad(Settings.FOV / 2)
+	local origin = Camera.CFrame.Position
+	local look = Camera.CFrame.LookVector
 
-local function FindTarget(origin, direction)
-	local maximumAngle = math.rad(Settings.FieldOfView) * 0.5
-	local bestAngle = maximumAngle
-	local bestHitbox = nil
-	local bestAimPoint = nil
-	local bestCharacter = nil
-
-	for _, player in ipairs(Players:GetPlayers()) do
-		if IsValidTarget(player) then
-			local character = player.Character
-			local hitbox = character.Hitbox
-			local aimPoint = GetHeadPosition(hitbox, character)
-			local distance = (aimPoint - origin).Magnitude
-
-			if distance > 0.5 and distance <= Settings.MaximumDistance then
-				local angle = GetAngleBetween(origin, direction, aimPoint)
-
-				if angle < bestAngle then
-					bestAngle = angle
-					bestHitbox = hitbox
-					bestAimPoint = aimPoint
-					bestCharacter = character
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr ~= LocalPlayer and isAlive(plr) and isEnemy(plr) then
+			local char = plr.Character
+			local headPos = getHeadPos(char)
+			if headPos then
+				local dist = (headPos - origin).Magnitude
+				if dist < Settings.MaxDistance and dist > 1 then
+					local dir = (headPos - origin).Unit
+					local angle = math.acos(math.clamp(look:Dot(dir), -1, 1))
+					if angle < closestAngle then
+						closestAngle = angle
+						closest = {player = plr, char = char, pos = headPos}
+					end
 				end
 			end
 		end
 	end
-
-	return bestHitbox, bestAimPoint, bestCharacter
+	return closest
 end
 
-local function IsWeaponRay(ray)
-	local originOffset = (ray.Origin - Camera.CFrame.Position).Magnitude
-	return originOffset <= Settings.CameraOriginTolerance and ray.Direction.Magnitude >= Settings.MinimumWeaponRange
-end
+-- ==================== SILENT AIM - METODO 1 (GeneralFunctions) ====================
+local hookedGameMethod = false
+local OriginalCast = nil
+local GeneralFunctions = nil
+local TeamCheckModule = nil
+local State = nil
+local Bridge = nil
+local General = nil
 
--- HOOK PRINCIPAL - HARD LOCK
-local function HookedCast(ray, hitList)
-	if Settings.SilentAimEnabled and IsWeaponRay(ray) then
-		local hitbox, aimPoint, character = FindTarget(ray.Origin, ray.Direction)
+local function tryHookGameMethod()
+	local success = pcall(function()
+		GeneralFunctions = require(ReplicatedStorage:WaitForChild("Modules", 3):WaitForChild("GeneralFunctions", 3))
+		TeamCheckModule = require(ReplicatedStorage.Modules.TeamCheck)
+		State = require(ReplicatedFirst.Client.Utility.State)
+		Bridge = require(ReplicatedFirst.Client.Utility.Bridge)
+		General = require(ReplicatedFirst.Client.Utility.General)
 
-		if hitbox and aimPoint then
-			-- TOTALMENTE BLOQUEADO a la cabeza
-			-- Devuelve siempre el hitbox + el punto exacto de la cabeza
-			return hitbox, aimPoint, Vector3.new(0, 1, 0), hitbox.Material
-		end
+		OriginalCast = GeneralFunctions.cast
+
+		GeneralFunctions.cast = newcclosure(function(ray, hitList)
+			if Settings.SilentAim then
+				local target = getClosestInFOV()
+				if target then
+					local hitbox = target.char:FindFirstChild("Hitbox") or target.char:FindFirstChild("Head")
+					if hitbox then
+						return hitbox, target.pos, Vector3.new(0, 1, 0), hitbox.Material
+					end
+				end
+			end
+			return OriginalCast(ray, hitList)
+		end)
+
+		hookedGameMethod = true
+		print("[ARGZx] Silent Aim: Metodo de juego (GeneralFunctions) ACTIVADO")
+	end)
+
+	if not success then
+		print("[ARGZx] Metodo de juego no disponible, usando metodo alternativo...")
 	end
-
-	return OriginalCast(ray, hitList)
+	return success
 end
 
-GeneralFunctions.cast = newcclosure(HookedCast)
+-- ==================== SILENT AIM - METODO 2 (hookmetamethod backup) ====================
+local function tryHookMetaMethod()
+	local success = pcall(function()
+		local old
+		old = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+			local method = getnamecallmethod()
+			local args = {...}
+
+			if Settings.SilentAim and not checkcaller() then
+				if method == "FindPartOnRayWithIgnoreList" or method == "FindPartOnRay" or method == "Raycast" then
+					local target = getClosestInFOV()
+					if target then
+						local origin = Camera.CFrame.Position
+						if typeof(args[1]) == "Ray" then
+							origin = args[1].Origin
+						elseif typeof(args[1]) == "Vector3" then
+							origin = args[1]
+						end
+						local dir = (target.pos - origin).Unit * 2000
+
+						if method == "Raycast" then
+							if typeof(args[1]) == "Vector3" then
+								return old(self, origin, dir, args[3])
+							end
+						else
+							args[1] = Ray.new(origin, dir)
+							return old(self, unpack(args))
+						end
+					end
+				end
+			end
+			return old(self, ...)
+		end))
+		print("[ARGZx] Silent Aim: Metodo alternativo (hookmetamethod) ACTIVADO")
+	end)
+	return success
+end
+
+-- Intentar ambos metodos
+if not tryHookGameMethod() then
+	tryHookMetaMethod()
+end
 
 -- ==================== INFINITE AMMO ====================
-local function MaintainAmmo()
+local function maintainAmmo()
 	if not Settings.InfiniteAmmo then return end
-	local gun = State.gun
-	if not gun then return end
-
-	local capacity = math.min(General.getammo(gun), 999)
+	if not State or not Bridge or not General then return end
 
 	pcall(function()
+		local gun = State.gun
+		if not gun then return end
+		local capacity = math.min(General.getammo(gun), 999)
+
 		if State.equipped == "primary" then
 			if State.primarymode == "2" then
 				if State.primarygrenades < 1 then State.primarygrenades = 1; Bridge.CountAmmo:Fire() end
@@ -186,17 +233,25 @@ local function MaintainAmmo()
 	end)
 end
 
--- ==================== ESP ====================
+-- ==================== ESP (Highlight + Billboard - mas compatible) ====================
 local ESPFolder = Instance.new("Folder")
-ESPFolder.Name = "ARGZx_ESP"
-pcall(function() ESPFolder.Parent = CoreGui end)
+ESPFolder.Name = "ARGZxESP"
+pcall(function()
+	ESPFolder.Parent = CoreGui
+end)
 
 local highlights = {}
 local billboards = {}
 
 local function clearESP(plr)
-	if highlights[plr] then pcall(function() highlights[plr]:Destroy() end); highlights[plr] = nil end
-	if billboards[plr] then pcall(function() billboards[plr]:Destroy() end); billboards[plr] = nil end
+	if highlights[plr] then
+		pcall(function() highlights[plr]:Destroy() end)
+		highlights[plr] = nil
+	end
+	if billboards[plr] then
+		pcall(function() billboards[plr]:Destroy() end)
+		billboards[plr] = nil
+	end
 end
 
 local function createESP(plr)
@@ -204,36 +259,36 @@ local function createESP(plr)
 	clearESP(plr)
 
 	local hl = Instance.new("Highlight")
-	hl.FillTransparency = 0.55
-	hl.OutlineTransparency = 0.1
+	hl.FillTransparency = 0.5
+	hl.OutlineTransparency = 0
 	hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
 	hl.Parent = ESPFolder
 	highlights[plr] = hl
 
 	local bb = Instance.new("BillboardGui")
 	bb.AlwaysOnTop = true
-	bb.Size = UDim2.new(0, 220, 0, 50)
-	bb.StudsOffset = Vector3.new(0, 3.6, 0)
+	bb.Size = UDim2.new(0, 200, 0, 50)
+	bb.StudsOffset = Vector3.new(0, 3.5, 0)
 	bb.Parent = ESPFolder
 
-	local nameLabel = Instance.new("TextLabel")
-	nameLabel.Name = "Name"
-	nameLabel.BackgroundTransparency = 1
-	nameLabel.Size = UDim2.new(1, 0, 0.5, 0)
-	nameLabel.Font = Enum.Font.GothamBold
-	nameLabel.TextSize = 14
-	nameLabel.TextStrokeTransparency = 0.25
-	nameLabel.Parent = bb
+	local nameLbl = Instance.new("TextLabel")
+	nameLbl.Name = "Name"
+	nameLbl.BackgroundTransparency = 1
+	nameLbl.Size = UDim2.new(1, 0, 0.5, 0)
+	nameLbl.Font = Enum.Font.GothamBold
+	nameLbl.TextSize = 14
+	nameLbl.TextStrokeTransparency = 0.2
+	nameLbl.Parent = bb
 
-	local infoLabel = Instance.new("TextLabel")
-	infoLabel.Name = "Info"
-	infoLabel.BackgroundTransparency = 1
-	infoLabel.Position = UDim2.new(0, 0, 0.48, 0)
-	infoLabel.Size = UDim2.new(1, 0, 0.45, 0)
-	infoLabel.Font = Enum.Font.Gotham
-	infoLabel.TextSize = 12
-	infoLabel.TextStrokeTransparency = 0.35
-	infoLabel.Parent = bb
+	local infoLbl = Instance.new("TextLabel")
+	infoLbl.Name = "Info"
+	infoLbl.BackgroundTransparency = 1
+	infoLbl.Position = UDim2.new(0, 0, 0.5, 0)
+	infoLbl.Size = UDim2.new(1, 0, 0.45, 0)
+	infoLbl.Font = Enum.Font.Gotham
+	infoLbl.TextSize = 12
+	infoLbl.TextStrokeTransparency = 0.3
+	infoLbl.Parent = bb
 
 	billboards[plr] = bb
 end
@@ -241,29 +296,27 @@ end
 local function updateESP()
 	for _, plr in ipairs(Players:GetPlayers()) do
 		if plr == LocalPlayer then continue end
-		if not highlights[plr] then createESP(plr) end
+
+		if not highlights[plr] then
+			createESP(plr)
+		end
 
 		local hl = highlights[plr]
 		local bb = billboards[plr]
 		local char = plr.Character
 		local hum = char and char:FindFirstChildOfClass("Humanoid")
 		local head = char and char:FindFirstChild("Head")
-		local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Hitbox"))
+		local root = char and char:FindFirstChild("HumanoidRootPart")
 
-		if Settings.ESPEnabled and char and hum and hum.Health > 0 and head and root then
+		if Settings.ESP and isAlive(plr) and head and root then
 			local dist = (Camera.CFrame.Position - root.Position).Magnitude
-			if dist > Settings.MaxESPDistance then
+			if dist > 1200 then
 				if hl then hl.Enabled = false end
 				if bb then bb.Enabled = false end
 				continue
 			end
 
-			local enemy = true
-			pcall(function()
-				if TeamCheck.isteam(LocalPlayer, char) then enemy = false end
-			end)
-
-			local color = enemy and Settings.EnemyColor or Settings.AllyColor
+			local color = isEnemy(plr) and Settings.EnemyColor or Settings.AllyColor
 
 			if hl then
 				hl.Adornee = char
@@ -275,15 +328,15 @@ local function updateESP()
 			if bb then
 				bb.Adornee = head
 				bb.Enabled = true
-				local nameL = bb:FindFirstChild("Name")
-				local infoL = bb:FindFirstChild("Info")
-				if nameL then
-					nameL.Text = plr.DisplayName or plr.Name
-					nameL.TextColor3 = color
+				local n = bb:FindFirstChild("Name")
+				local i = bb:FindFirstChild("Info")
+				if n then
+					n.Text = plr.DisplayName or plr.Name
+					n.TextColor3 = color
 				end
-				if infoL then
-					infoL.Text = string.format("%dm  |  %d HP", math.floor(dist), math.floor(hum.Health))
-					infoL.TextColor3 = Color3.fromRGB(230, 230, 230)
+				if i then
+					i.Text = math.floor(dist) .. "m | " .. math.floor(hum.Health) .. " HP"
+					i.TextColor3 = Color3.fromRGB(240, 240, 240)
 				end
 			end
 		else
@@ -293,42 +346,53 @@ local function updateESP()
 	end
 end
 
-for _, plr in ipairs(Players:GetPlayers()) do createESP(plr) end
-Players.PlayerAdded:Connect(function(plr) task.wait(1.2); createESP(plr) end)
+for _, plr in ipairs(Players:GetPlayers()) do
+	task.spawn(createESP, plr)
+end
+
+Players.PlayerAdded:Connect(function(plr)
+	task.wait(1)
+	createESP(plr)
+end)
+
 Players.PlayerRemoving:Connect(clearESP)
 
--- ==================== RENDER LOOP ====================
-local conn = RunService.RenderStepped:Connect(function()
-	-- Actualizar circulo FOV
-	if FOVCircle then
-		local mousePos = UserInputService:GetMouseLocation()
-		FOVCircle.Position = mousePos
-		FOVCircle.Radius = Settings.FieldOfView
-		FOVCircle.Visible = Settings.SilentAimEnabled
+print("[ARGZx] ESP creado")
+
+-- ==================== LOOP ====================
+local connection = RunService.RenderStepped:Connect(function()
+	-- FOV
+	if FOVCircle and hasDrawing then
+		FOVCircle.Position = UserInputService:GetMouseLocation()
+		FOVCircle.Radius = Settings.FOV
+		FOVCircle.Visible = Settings.ShowFOV and Settings.SilentAim
 	end
 
-	MaintainAmmo()
+	maintainAmmo()
 	updateESP()
 end)
 
--- ==================== RESTORE ====================
-getgenv().ArsenalCombatAssist = {
+-- ==================== CLEANUP ====================
+getgenv().ARGZxArsenal = {
 	Settings = Settings,
-	Restore = function()
-		GeneralFunctions.cast = OriginalCast
-		if conn then conn:Disconnect() end
+	Cleanup = function()
+		Settings.SilentAim = false
+		Settings.ESP = false
+		if connection then connection:Disconnect() end
 		if FOVCircle then pcall(function() FOVCircle:Remove() end) end
+		if OriginalCast and GeneralFunctions then
+			pcall(function() GeneralFunctions.cast = OriginalCast end)
+		end
 		for plr in pairs(highlights) do clearESP(plr) end
 		pcall(function() ESPFolder:Destroy() end)
-		getgenv().ArsenalCombatAssist = nil
-		print("[ARGZx] Desactivado.")
+		getgenv().ARGZxArsenal = nil
 	end
 }
 
-print("====================================================")
-print("[ARGZx] HARD LOCK Silent Aim + ESP CARGADO")
-print("Circulo FOV : GRANDE (350)")
-print("Silent Aim  : BLOQUEADO A LA CABEZA")
-print("ESP         : ACTIVADO")
-print("Municion    : INFINITA")
-print("====================================================")
+print("===========================================")
+print("[ARGZx] SCRIPT CARGADO")
+print("Silent Aim : " .. (Settings.SilentAim and "ON" or "OFF"))
+print("ESP        : " .. (Settings.ESP and "ON" or "OFF"))
+print("FOV        : " .. tostring(Settings.FOV))
+print("===========================================")
+print("Si no ves el ESP, asegurate de estar DENTRO de una partida.")
