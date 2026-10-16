@@ -1,398 +1,361 @@
--- ==================== ARGZx Arsenal HARD LOCK v3 ====================
--- Mas estable para Xeno
--- Todo se activa solo
+--[[
+    Arsenal Combat Assist - Xeno Compatible
+    Features: Silent Aim, Auto Fire, Infinite Ammo
+    Based on open-source ScriptBlox version
+]]
 
 local Players = game:GetService("Players")
+local ReplicatedFirst = game:GetService("ReplicatedFirst")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
-local CoreGui = game:GetService("CoreGui")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local ReplicatedFirst = game:GetService("ReplicatedFirst")
+local TweenService = game:GetService("TweenService")
 
 local LocalPlayer = Players.LocalPlayer
 local Camera = workspace.CurrentCamera
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
-print("[ARGZx] Iniciando...")
+-- Wait for Arsenal modules
+local GeneralFunctions, TeamCheck, Bridge, State, General
 
--- Esperar a que el jugador este listo
-if not LocalPlayer.Character then
-	LocalPlayer.CharacterAdded:Wait()
+local function loadModules()
+	local ok1, gf = pcall(function() return require(ReplicatedStorage.Modules.GeneralFunctions) end)
+	local ok2, tc = pcall(function() return require(ReplicatedStorage.Modules.TeamCheck) end)
+	local ok3, br = pcall(function() return require(ReplicatedFirst.Client.Utility.Bridge) end)
+	local ok4, st = pcall(function() return require(ReplicatedFirst.Client.Utility.State) end)
+	local ok5, ge = pcall(function() return require(ReplicatedFirst.Client.Utility.General) end)
+
+	if ok1 and ok2 and ok3 and ok4 and ok5 then
+		GeneralFunctions = gf
+		TeamCheck = tc
+		Bridge = br
+		State = st
+		General = ge
+		return true
+	end
+	return false
 end
-task.wait(1)
+
+local loaded = false
+for i = 1, 50 do
+	if loadModules() then
+		loaded = true
+		break
+	end
+	task.wait(0.2)
+end
+
+if not loaded then
+	warn("[Arsenal] No se pudieron cargar los módulos. Entra a una partida e intenta de nuevo.")
+	return
+end
+
+local OriginalCast = GeneralFunctions.cast
+local OriginalGetHitList = GeneralFunctions.gethitlist
 
 -- ==================== SETTINGS ====================
 local Settings = {
-	SilentAim = true,
-	FOV = 320,
-	TeamCheck = true,
-	HeadOffset = 0.8,          -- altura de la cabeza
-	MaxDistance = 2000,
-	InfiniteAmmo = true,
-	ESP = true,
-	ShowFOV = true,
-	EnemyColor = Color3.fromRGB(255, 40, 40),
-	AllyColor = Color3.fromRGB(40, 255, 90),
-	FOVColor = Color3.fromRGB(255, 60, 60),
+	SilentAimEnabled = true,
+	AutoFireEnabled = true,
+	InfiniteAmmoEnabled = true,
+	AutoFireMeleeEnabled = false,
+	FieldOfView = 180,
+	IgnoreTeammates = true,
+	RequireVisibility = true,
+	RequireMouseLocked = true,
+	HeadshotRatio = 0.49,
+	MaximumDistance = 1500,
+	MinimumWeaponRange = 20,
+	CameraOriginTolerance = 2,
+	ReserveAmmo = 300,
+	MaximumAmmoGuard = 999,
 }
 
--- ==================== LIMPIAR VERSION ANTERIOR ====================
-if getgenv().ARGZxArsenal then
-	pcall(function()
-		if getgenv().ARGZxArsenal.Cleanup then
-			getgenv().ARGZxArsenal.Cleanup()
-		end
-	end)
-end
-
--- ==================== FOV CIRCLE ====================
-local FOVCircle = nil
-local hasDrawing = false
-
-pcall(function()
-	FOVCircle = Drawing.new("Circle")
-	FOVCircle.Thickness = 2
-	FOVCircle.NumSides = 70
-	FOVCircle.Radius = Settings.FOV
-	FOVCircle.Filled = false
-	FOVCircle.Color = Settings.FOVColor
-	FOVCircle.Transparency = 0.65
-	FOVCircle.Visible = true
-	hasDrawing = true
-	print("[ARGZx] FOV Circle creado")
-end)
-
-if not hasDrawing then
-	print("[ARGZx] Drawing no disponible, FOV invisible (normal en algunos executors)")
+-- Restore previous if exists
+if getgenv().ArsenalCombatAssist and getgenv().ArsenalCombatAssist.Restore then
+	pcall(getgenv().ArsenalCombatAssist.Restore)
 end
 
 -- ==================== HELPERS ====================
-local function isAlive(plr)
-	local char = plr.Character
-	if not char then return false end
-	local hum = char:FindFirstChildOfClass("Humanoid")
-	return hum and hum.Health > 0
+local function IsAlive()
+	local nrpbs = LocalPlayer:FindFirstChild("NRPBS")
+	if not nrpbs then return false end
+	local health = nrpbs:FindFirstChild("Health")
+	return health and health.Value > 0
 end
 
-local function isEnemy(plr)
-	if not Settings.TeamCheck then return true end
-	if LocalPlayer.Team and plr.Team then
-		return LocalPlayer.Team ~= plr.Team
+local function HasWeaponEquipped()
+	return State.gun ~= nil and State.equipped ~= "none"
+end
+
+local function IsMouseLocked()
+	local mb = UserInputService.MouseBehavior
+	return mb == Enum.MouseBehavior.LockCenter or mb == Enum.MouseBehavior.LockCurrentPosition
+end
+
+local function IsValidTarget(player)
+	if player == LocalPlayer then return false end
+	local character = player.Character
+	if not character then return false end
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if not humanoid or humanoid.Health <= 0 then return false end
+	if not character:FindFirstChild("Hitbox") then return false end
+
+	if Settings.IgnoreTeammates then
+		local ok, isTeam = pcall(function()
+			return TeamCheck.isteam(LocalPlayer, character)
+		end)
+		if ok and isTeam then return false end
 	end
+
 	return true
 end
 
-local function getHeadPos(char)
-	local head = char:FindFirstChild("Head")
-	if head then
-		return head.Position + Vector3.new(0, 0.2, 0)
-	end
-	local hitbox = char:FindFirstChild("Hitbox")
-	if hitbox then
-		return hitbox.Position + Vector3.new(0, hitbox.Size.Y * Settings.HeadOffset, 0)
-	end
-	local root = char:FindFirstChild("HumanoidRootPart")
-	if root then
-		return root.Position + Vector3.new(0, 2.5, 0)
-	end
-	return nil
+local function GetAimPoint(hitbox)
+	local verticalOffset = hitbox.Size.Y * Settings.HeadshotRatio
+	return hitbox.Position + Vector3.new(0, verticalOffset, 0)
 end
 
-local function getClosestInFOV()
-	local closest = nil
-	local closestAngle = math.rad(Settings.FOV / 2)
-	local origin = Camera.CFrame.Position
-	local look = Camera.CFrame.LookVector
+local function GetAngleBetween(origin, direction, position)
+	local offset = position - origin
+	if offset.Magnitude < 0.001 then return 0 end
+	local dot = direction.Unit:Dot(offset.Unit)
+	return math.acos(math.clamp(dot, -1, 1))
+end
 
-	for _, plr in ipairs(Players:GetPlayers()) do
-		if plr ~= LocalPlayer and isAlive(plr) and isEnemy(plr) then
-			local char = plr.Character
-			local headPos = getHeadPos(char)
-			if headPos then
-				local dist = (headPos - origin).Magnitude
-				if dist < Settings.MaxDistance and dist > 1 then
-					local dir = (headPos - origin).Unit
-					local angle = math.acos(math.clamp(look:Dot(dir), -1, 1))
-					if angle < closestAngle then
-						closestAngle = angle
-						closest = {player = plr, char = char, pos = headPos}
+local function IsVisibleFromCamera(origin, aimPoint, character, hitList)
+	local offset = aimPoint - origin
+	local hitInstance = OriginalCast(Ray.new(origin, offset.Unit * offset.Magnitude), hitList)
+	if hitInstance == nil then return true end
+	return hitInstance:IsDescendantOf(character)
+end
+
+local function FindTarget(origin, direction, hitList)
+	local maximumAngle = math.rad(Settings.FieldOfView) * 0.5
+	local bestAngle = maximumAngle
+	local bestHitbox, bestAimPoint = nil, nil
+
+	for _, player in ipairs(Players:GetPlayers()) do
+		if IsValidTarget(player) then
+			local character = player.Character
+			local hitbox = character.Hitbox
+			local aimPoint = GetAimPoint(hitbox)
+			local distance = (aimPoint - origin).Magnitude
+
+			if distance > 0.001 and distance <= Settings.MaximumDistance then
+				local angle = GetAngleBetween(origin, direction, aimPoint)
+				if angle < bestAngle then
+					if not Settings.RequireVisibility or IsVisibleFromCamera(origin, aimPoint, character, hitList) then
+						bestAngle = angle
+						bestHitbox = hitbox
+						bestAimPoint = aimPoint
 					end
 				end
 			end
 		end
 	end
-	return closest
+
+	return bestHitbox, bestAimPoint
 end
 
--- ==================== SILENT AIM - METODO 1 (GeneralFunctions) ====================
-local hookedGameMethod = false
-local OriginalCast = nil
-local GeneralFunctions = nil
-local TeamCheckModule = nil
-local State = nil
-local Bridge = nil
-local General = nil
-
-local function tryHookGameMethod()
-	local success = pcall(function()
-		GeneralFunctions = require(ReplicatedStorage:WaitForChild("Modules", 3):WaitForChild("GeneralFunctions", 3))
-		TeamCheckModule = require(ReplicatedStorage.Modules.TeamCheck)
-		State = require(ReplicatedFirst.Client.Utility.State)
-		Bridge = require(ReplicatedFirst.Client.Utility.Bridge)
-		General = require(ReplicatedFirst.Client.Utility.General)
-
-		OriginalCast = GeneralFunctions.cast
-
-		GeneralFunctions.cast = newcclosure(function(ray, hitList)
-			if Settings.SilentAim then
-				local target = getClosestInFOV()
-				if target then
-					local hitbox = target.char:FindFirstChild("Hitbox") or target.char:FindFirstChild("Head")
-					if hitbox then
-						return hitbox, target.pos, Vector3.new(0, 1, 0), hitbox.Material
-					end
-				end
-			end
-			return OriginalCast(ray, hitList)
-		end)
-
-		hookedGameMethod = true
-		print("[ARGZx] Silent Aim: Metodo de juego (GeneralFunctions) ACTIVADO")
-	end)
-
-	if not success then
-		print("[ARGZx] Metodo de juego no disponible, usando metodo alternativo...")
-	end
-	return success
+local function IsWeaponRay(ray)
+	local originOffset = (ray.Origin - Camera.CFrame.Position).Magnitude
+	return originOffset <= Settings.CameraOriginTolerance and ray.Direction.Magnitude >= Settings.MinimumWeaponRange
 end
 
--- ==================== SILENT AIM - METODO 2 (hookmetamethod backup) ====================
-local function tryHookMetaMethod()
-	local success = pcall(function()
-		local old
-		old = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
-			local method = getnamecallmethod()
-			local args = {...}
-
-			if Settings.SilentAim and not checkcaller() then
-				if method == "FindPartOnRayWithIgnoreList" or method == "FindPartOnRay" or method == "Raycast" then
-					local target = getClosestInFOV()
-					if target then
-						local origin = Camera.CFrame.Position
-						if typeof(args[1]) == "Ray" then
-							origin = args[1].Origin
-						elseif typeof(args[1]) == "Vector3" then
-							origin = args[1]
-						end
-						local dir = (target.pos - origin).Unit * 2000
-
-						if method == "Raycast" then
-							if typeof(args[1]) == "Vector3" then
-								return old(self, origin, dir, args[3])
-							end
-						else
-							args[1] = Ray.new(origin, dir)
-							return old(self, unpack(args))
-						end
-					end
-				end
-			end
-			return old(self, ...)
-		end))
-		print("[ARGZx] Silent Aim: Metodo alternativo (hookmetamethod) ACTIVADO")
-	end)
-	return success
-end
-
--- Intentar ambos metodos
-if not tryHookGameMethod() then
-	tryHookMetaMethod()
-end
-
--- ==================== INFINITE AMMO ====================
-local function maintainAmmo()
-	if not Settings.InfiniteAmmo then return end
-	if not State or not Bridge or not General then return end
-
-	pcall(function()
-		local gun = State.gun
-		if not gun then return end
-		local capacity = math.min(General.getammo(gun), 999)
-
-		if State.equipped == "primary" then
-			if State.primarymode == "2" then
-				if State.primarygrenades < 1 then State.primarygrenades = 1; Bridge.CountAmmo:Fire() end
-				if State.storedgrenades < 300 then State.storedgrenades = 300; Bridge.CountAmmo:Fire() end
-			else
-				if State.ammocount < capacity then State.ammocount = capacity; Bridge.CountAmmo:Fire() end
-				if State.primarystored < 300 then State.primarystored = 300; Bridge.CountAmmo:Fire() end
-			end
-		elseif State.equipped == "secondary" then
-			if State.ammo2count < capacity then State.ammo2count = capacity; Bridge.CountAmmo:Fire() end
-			if State.secondarystored < 300 then State.secondarystored = 300; Bridge.CountAmmo:Fire() end
+local function HookedCast(ray, hitList)
+	if Settings.SilentAimEnabled and IsWeaponRay(ray) then
+		local hitbox, aimPoint = FindTarget(ray.Origin, ray.Direction, hitList)
+		if hitbox then
+			return hitbox, aimPoint, Vector3.new(0, 1, 0), hitbox.Material
 		end
-	end)
-end
-
--- ==================== ESP (Highlight + Billboard - mas compatible) ====================
-local ESPFolder = Instance.new("Folder")
-ESPFolder.Name = "ARGZxESP"
-pcall(function()
-	ESPFolder.Parent = CoreGui
-end)
-
-local highlights = {}
-local billboards = {}
-
-local function clearESP(plr)
-	if highlights[plr] then
-		pcall(function() highlights[plr]:Destroy() end)
-		highlights[plr] = nil
 	end
-	if billboards[plr] then
-		pcall(function() billboards[plr]:Destroy() end)
-		billboards[plr] = nil
-	end
+	return OriginalCast(ray, hitList)
 end
 
-local function createESP(plr)
-	if plr == LocalPlayer then return end
-	clearESP(plr)
+local function MaintainAmmo()
+	if not Settings.InfiniteAmmoEnabled then return end
+	local gun = State.gun
+	if not gun then return end
 
-	local hl = Instance.new("Highlight")
-	hl.FillTransparency = 0.5
-	hl.OutlineTransparency = 0
-	hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-	hl.Parent = ESPFolder
-	highlights[plr] = hl
+	local capacity = math.min(General.getammo(gun), Settings.MaximumAmmoGuard)
 
-	local bb = Instance.new("BillboardGui")
-	bb.AlwaysOnTop = true
-	bb.Size = UDim2.new(0, 200, 0, 50)
-	bb.StudsOffset = Vector3.new(0, 3.5, 0)
-	bb.Parent = ESPFolder
-
-	local nameLbl = Instance.new("TextLabel")
-	nameLbl.Name = "Name"
-	nameLbl.BackgroundTransparency = 1
-	nameLbl.Size = UDim2.new(1, 0, 0.5, 0)
-	nameLbl.Font = Enum.Font.GothamBold
-	nameLbl.TextSize = 14
-	nameLbl.TextStrokeTransparency = 0.2
-	nameLbl.Parent = bb
-
-	local infoLbl = Instance.new("TextLabel")
-	infoLbl.Name = "Info"
-	infoLbl.BackgroundTransparency = 1
-	infoLbl.Position = UDim2.new(0, 0, 0.5, 0)
-	infoLbl.Size = UDim2.new(1, 0, 0.45, 0)
-	infoLbl.Font = Enum.Font.Gotham
-	infoLbl.TextSize = 12
-	infoLbl.TextStrokeTransparency = 0.3
-	infoLbl.Parent = bb
-
-	billboards[plr] = bb
-end
-
-local function updateESP()
-	for _, plr in ipairs(Players:GetPlayers()) do
-		if plr == LocalPlayer then continue end
-
-		if not highlights[plr] then
-			createESP(plr)
-		end
-
-		local hl = highlights[plr]
-		local bb = billboards[plr]
-		local char = plr.Character
-		local hum = char and char:FindFirstChildOfClass("Humanoid")
-		local head = char and char:FindFirstChild("Head")
-		local root = char and char:FindFirstChild("HumanoidRootPart")
-
-		if Settings.ESP and isAlive(plr) and head and root then
-			local dist = (Camera.CFrame.Position - root.Position).Magnitude
-			if dist > 1200 then
-				if hl then hl.Enabled = false end
-				if bb then bb.Enabled = false end
-				continue
+	if State.equipped == "primary" then
+		if State.primarymode == "2" then
+			if State.primarygrenades < 1 then
+				State.primarygrenades = 1
+				Bridge.CountAmmo:Fire()
 			end
-
-			local color = isEnemy(plr) and Settings.EnemyColor or Settings.AllyColor
-
-			if hl then
-				hl.Adornee = char
-				hl.FillColor = color
-				hl.OutlineColor = color
-				hl.Enabled = true
-			end
-
-			if bb then
-				bb.Adornee = head
-				bb.Enabled = true
-				local n = bb:FindFirstChild("Name")
-				local i = bb:FindFirstChild("Info")
-				if n then
-					n.Text = plr.DisplayName or plr.Name
-					n.TextColor3 = color
-				end
-				if i then
-					i.Text = math.floor(dist) .. "m | " .. math.floor(hum.Health) .. " HP"
-					i.TextColor3 = Color3.fromRGB(240, 240, 240)
-				end
+			if State.storedgrenades < Settings.ReserveAmmo then
+				State.storedgrenades = Settings.ReserveAmmo
+				Bridge.CountAmmo:Fire()
 			end
 		else
-			if hl then hl.Enabled = false end
-			if bb then bb.Enabled = false end
+			if State.ammocount < capacity then
+				State.ammocount = capacity
+				Bridge.CountAmmo:Fire()
+			end
+			if State.primarystored < Settings.ReserveAmmo then
+				State.primarystored = Settings.ReserveAmmo
+				Bridge.CountAmmo:Fire()
+			end
+		end
+	elseif State.equipped == "secondary" then
+		if State.ammo2count < capacity then
+			State.ammo2count = capacity
+			Bridge.CountAmmo:Fire()
+		end
+		if State.secondarystored < Settings.ReserveAmmo then
+			State.secondarystored = Settings.ReserveAmmo
+			Bridge.CountAmmo:Fire()
 		end
 	end
 end
 
-for _, plr in ipairs(Players:GetPlayers()) do
-	task.spawn(createESP, plr)
+local function ShouldAutoFire(hitList)
+	if not Settings.AutoFireEnabled then return false end
+	if not IsAlive() or not HasWeaponEquipped() then return false end
+	if Settings.RequireMouseLocked and not IsMouseLocked() then return false end
+	if State.equipped == "melee" and not Settings.AutoFireMeleeEnabled then return false end
+	if State.reloading or State.equipping or State.taunting then return false end
+
+	local hitbox = FindTarget(Camera.CFrame.Position, Camera.CFrame.LookVector, hitList)
+	return hitbox ~= nil
 end
 
-Players.PlayerAdded:Connect(function(plr)
-	task.wait(1)
-	createESP(plr)
-end)
+-- Hook cast (Xeno compatible)
+local nc = newcclosure or function(f) return f end
+GeneralFunctions.cast = nc(HookedCast)
 
-Players.PlayerRemoving:Connect(clearESP)
+local renderConnection = RunService.RenderStepped:Connect(function()
+	pcall(MaintainAmmo)
 
-print("[ARGZx] ESP creado")
+	local hitList = OriginalGetHitList()
+	local autoFire = ShouldAutoFire(hitList)
+	local playerHolding = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
 
--- ==================== LOOP ====================
-local connection = RunService.RenderStepped:Connect(function()
-	-- FOV
-	if FOVCircle and hasDrawing then
-		FOVCircle.Position = UserInputService:GetMouseLocation()
-		FOVCircle.Radius = Settings.FOV
-		FOVCircle.Visible = Settings.ShowFOV and Settings.SilentAim
+	if autoFire or playerHolding then
+		State.Held1 = true
+	else
+		State.Held1 = false
 	end
-
-	maintainAmmo()
-	updateESP()
 end)
 
--- ==================== CLEANUP ====================
-getgenv().ARGZxArsenal = {
+-- ==================== SIMPLE GUI ====================
+local gui = Instance.new("ScreenGui")
+gui.Name = "ArsenalAssistGUI"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.Parent = PlayerGui
+
+local main = Instance.new("Frame")
+main.Size = UDim2.new(0, 260, 0, 280)
+main.Position = UDim2.new(0, 20, 0.5, -140)
+main.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
+main.BorderSizePixel = 0
+main.Active = true
+main.Draggable = true
+main.Parent = gui
+Instance.new("UICorner", main).CornerRadius = UDim.new(0, 10)
+
+local stroke = Instance.new("UIStroke")
+stroke.Color = Color3.fromRGB(80, 50, 180)
+stroke.Thickness = 1.5
+stroke.Parent = main
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, 0, 0, 36)
+title.BackgroundTransparency = 1
+title.Text = "Arsenal Assist"
+title.TextColor3 = Color3.fromRGB(200, 180, 255)
+title.Font = Enum.Font.GothamBold
+title.TextSize = 16
+title.Parent = main
+
+local function makeToggle(y, name, key, default)
+	local row = Instance.new("TextButton")
+	row.Size = UDim2.new(1, -20, 0, 36)
+	row.Position = UDim2.new(0, 10, 0, y)
+	row.BackgroundColor3 = Color3.fromRGB(28, 28, 36)
+	row.Text = ""
+	row.AutoButtonColor = false
+	row.Parent = main
+	Instance.new("UICorner", row).CornerRadius = UDim.new(0, 8)
+
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.new(1, -50, 1, 0)
+	label.Position = UDim2.new(0, 12, 0, 0)
+	label.BackgroundTransparency = 1
+	label.Text = name
+	label.TextColor3 = Color3.fromRGB(220, 220, 235)
+	label.Font = Enum.Font.GothamMedium
+	label.TextSize = 13
+	label.TextXAlignment = Enum.TextXAlignment.Left
+	label.Parent = row
+
+	local indicator = Instance.new("Frame")
+	indicator.Size = UDim2.new(0, 12, 0, 12)
+	indicator.Position = UDim2.new(1, -28, 0.5, -6)
+	indicator.BackgroundColor3 = default and Color3.fromRGB(80, 220, 120) or Color3.fromRGB(80, 80, 90)
+	indicator.BorderSizePixel = 0
+	indicator.Parent = row
+	Instance.new("UICorner", indicator).CornerRadius = UDim.new(1, 0)
+
+	local state = default
+	row.MouseButton1Click:Connect(function()
+		state = not state
+		Settings[key] = state
+		indicator.BackgroundColor3 = state and Color3.fromRGB(80, 220, 120) or Color3.fromRGB(80, 80, 90)
+	end)
+end
+
+makeToggle(44, "Silent Aim", "SilentAimEnabled", true)
+makeToggle(86, "Auto Fire", "AutoFireEnabled", true)
+makeToggle(128, "Infinite Ammo", "InfiniteAmmoEnabled", true)
+makeToggle(170, "Ignore Teammates", "IgnoreTeammates", true)
+makeToggle(212, "Require Visibility", "RequireVisibility", true)
+
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0, 28, 0, 28)
+closeBtn.Position = UDim2.new(1, -34, 0, 4)
+closeBtn.BackgroundColor3 = Color3.fromRGB(40, 30, 40)
+closeBtn.Text = "X"
+closeBtn.TextColor3 = Color3.fromRGB(220, 140, 160)
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextSize = 13
+closeBtn.Parent = main
+Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 6)
+
+closeBtn.MouseButton1Click:Connect(function()
+	if getgenv().ArsenalCombatAssist and getgenv().ArsenalCombatAssist.Restore then
+		getgenv().ArsenalCombatAssist.Restore()
+	end
+	gui:Destroy()
+end)
+
+-- RightControl to toggle GUI
+UserInputService.InputBegan:Connect(function(input, gp)
+	if gp then return end
+	if input.KeyCode == Enum.KeyCode.RightControl then
+		main.Visible = not main.Visible
+	end
+end)
+
+getgenv().ArsenalCombatAssist = {
 	Settings = Settings,
-	Cleanup = function()
-		Settings.SilentAim = false
-		Settings.ESP = false
-		if connection then connection:Disconnect() end
-		if FOVCircle then pcall(function() FOVCircle:Remove() end) end
-		if OriginalCast and GeneralFunctions then
-			pcall(function() GeneralFunctions.cast = OriginalCast end)
-		end
-		for plr in pairs(highlights) do clearESP(plr) end
-		pcall(function() ESPFolder:Destroy() end)
-		getgenv().ARGZxArsenal = nil
-	end
+	FindTarget = FindTarget,
+	IsWeaponRay = IsWeaponRay,
+	MaintainAmmo = MaintainAmmo,
+	ShouldAutoFire = ShouldAutoFire,
+	OriginalCast = OriginalCast,
+	Restore = function()
+		GeneralFunctions.cast = OriginalCast
+		if renderConnection then renderConnection:Disconnect() end
+		State.Held1 = false
+		getgenv().ArsenalCombatAssist = nil
+	end,
 }
 
-print("===========================================")
-print("[ARGZx] SCRIPT CARGADO")
-print("Silent Aim : " .. (Settings.SilentAim and "ON" or "OFF"))
-print("ESP        : " .. (Settings.ESP and "ON" or "OFF"))
-print("FOV        : " .. tostring(Settings.FOV))
-print("===========================================")
-print("Si no ves el ESP, asegurate de estar DENTRO de una partida.")
+print("[Arsenal Assist] Cargado | RightCtrl = mostrar/ocultar GUI")
