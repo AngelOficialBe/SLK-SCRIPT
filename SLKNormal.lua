@@ -254,7 +254,7 @@ end)
 -- ==================== AUTO REBIRTH ESTABLE ====================
 task.spawn(function()
 	local lastRequest = 0
-	local minCooldown = 0.20
+	local minCooldown = 0.1
 
 	local function getRemote()
 		local rEvents = ReplicatedStorage:FindFirstChild("rEvents")
