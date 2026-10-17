@@ -225,8 +225,8 @@ task.spawn(function()
         if child.Name == "muscleEvent" then cachedEvent = child end
     end)
 
-    local RATE = 50000
-    local BURST = 5000
+    local RATE = 20000
+    local BURST = 2000
     local INTERVAL = BURST / RATE
 
     while true do
